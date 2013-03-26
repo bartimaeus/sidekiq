@@ -103,6 +103,25 @@ module Sidekiq
       def redis_keys
         ["redis_stats", "uptime_in_days", "connected_clients", "used_memory_human", "used_memory_peak_human"]
       end
+
+      # Hack for when Sidekiq.redis block is returning a String rather than a Hash.
+      # I tried several versions of multi_json thinking that was the issue without any luck;
+      # Needing to make something work, I created this method until I can figure out the real issue.
+      def parse_redis_info(redis_info)
+        if redis_info.class == String
+          redis_info_hash = {}
+          redis_keys.each do |k|
+            if match = redis_info.match(/#{k}:(\w+)\r\n/)
+              redis_info_hash[k]= match[1]
+            else
+              redis_info_hash[k] = 0
+            end
+          end
+          redis_info_hash
+        else
+          redis_info
+        end
+      end
     end
 
     get "/workers" do
@@ -204,7 +223,7 @@ module Sidekiq
     end
 
     get '/' do
-      @redis_info = Sidekiq.redis { |conn| conn.info }.select{ |k, v| redis_keys.include? k }
+      @redis_info = parse_redis_info(Sidekiq.redis { |conn| conn.info }).select{ |k, v| redis_keys.include? k }
       stats_history = Sidekiq::Stats::History.new((params[:days] || 30).to_i)
       @processed_history = stats_history.processed
       @failed_history = stats_history.failed
@@ -213,7 +232,7 @@ module Sidekiq
 
     get '/dashboard/stats' do
       sidekiq_stats = Sidekiq::Stats.new
-      redis_stats   = Sidekiq.redis { |conn| conn.info }.select{ |k, v| redis_keys.include? k }
+      redis_stats   = parse_redis_info(Sidekiq.redis { |conn| conn.info }).select{ |k, v| redis_keys.include? k }
 
       content_type :json
       Sidekiq.dump_json({
